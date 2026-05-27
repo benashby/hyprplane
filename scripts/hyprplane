@@ -43,6 +43,16 @@ FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
 log()     { echo "[hyprplane] $*" | systemd-cat -t hyprplane -p info 2>/dev/null || echo "[hyprplane] $*" >&2; }
 log_err() { echo "[hyprplane] $*" | systemd-cat -t hyprplane -p err  2>/dev/null || echo "[hyprplane] ERROR: $*" >&2; }
 
+# ── cleanup ───────────────────────────────────────────────────────────────────
+
+cleanup() {
+  [[ -n "${AGG:-}" ]] && rm -f "$AGG"
+  kill "${SOCAT_PID:-}" "${FIFO_PID:-}" 2>/dev/null || true
+  exec 3>&- 2>/dev/null || true
+  exit
+}
+trap cleanup EXIT SIGTERM SIGINT
+
 # ── state helpers ─────────────────────────────────────────────────────────────
 
 plane_index() {
@@ -120,7 +130,10 @@ switch_to_plane() {
 
   current_ws=$(hyprctl activeworkspace -j | jq -r '.id')
   current_base=$(plane_base "$CURRENT_INDEX")
-  LAST_SLOTS["$CURRENT_NAME"]=$(( current_ws - current_base ))
+  local computed_slot=$(( current_ws - current_base ))
+  if (( computed_slot >= 1 && computed_slot <= SLOTS )); then
+    LAST_SLOTS["$CURRENT_NAME"]=$computed_slot
+  fi
 
   CURRENT_NAME="$name"
   CURRENT_INDEX="$index"
@@ -136,6 +149,8 @@ switch_to_plane() {
 
 create_plane() {
   local name="$1" new_index base slot ws_id key
+  [[ -z "$name" ]] && { log_err "plane name cannot be empty"; return; }
+  [[ "$name" == *:* ]] && { log_err "plane name cannot contain ':'"; return; }
   if [[ $(plane_index "$name") != "-1" ]]; then
     log_err "plane already exists: $name"; return
   fi
@@ -162,6 +177,8 @@ create_plane() {
 
 rename_plane() {
   local old="$1" new="$2" index
+  [[ -z "$new" ]] && { log_err "new plane name cannot be empty"; return; }
+  [[ "$new" == *:* ]] && { log_err "plane name cannot contain ':'"; return; }
   [[ "$old" == "default" ]] && { log_err "cannot rename default plane"; return; }
   index=$(plane_index "$old")
   [[ "$index" == "-1" ]] && { log_err "plane not found: $old"; return; }
@@ -192,7 +209,7 @@ delete_plane() {
     src_ws=$(( del_base + slot ))
     dst_ws=$(( default_base + slot ))
     while IFS= read -r addr; do
-      hyprctl dispatch movewindowpixel "movetoworkspacesilent,${dst_ws},address:${addr}" > /dev/null 2>&1 || true
+      hyprctl dispatch movetoworkspacesilent "${dst_ws},address:${addr}" > /dev/null 2>&1 || true
     done < <(hyprctl clients -j 2>/dev/null | jq -r --argjson ws "$src_ws" '.[] | select(.workspace.id == $ws) | .address')
   done
 
@@ -319,7 +336,9 @@ while true; do
 
   # FIFO feeder — persistent, prefixes lines "C:"
   (while true; do
-    read -r cmd < "$FIFO_PATH" && printf 'C:%s\n' "$cmd" >&3
+    if read -r cmd < "$FIFO_PATH"; then
+      printf 'C:%s\n' "$cmd" >&3 || true
+    fi
   done) &
   FIFO_PID=$!
 
