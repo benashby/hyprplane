@@ -54,37 +54,31 @@ write_state() {
 # ── key binding ───────────────────────────────────────────────────────────────
 
 bind_slots() {
-  local index="$1" base slot ws_id key
+  local index="$1" base slot ws_id key batch=""
   base=$(plane_base "$index")
-  # unbind first — hyprctl keyword bind accumulates, not replaces
-  slot=0
-  for key in "${SLOT_KEYS[@]}"; do
-    slot=$(( slot + 1 ))
-    [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                        > /dev/null 2>&1 || true
-    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                        > /dev/null 2>&1 || true
-  done
   slot=0
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
     ws_id=$(( base + slot ))
-    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"      > /dev/null
-    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
-    hyprctl keyword bind "${MOVE_MODIFIER},${key},movetoworkspace,${ws_id}" > /dev/null
+    # unbind first (accumulation guard), then bind — all in one batch IPC call
+    batch+="keyword unbind ${SLOT_MODIFIER},${key};"
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && batch+="keyword unbind ${MOVE_MODIFIER},${key};"
+    batch+="keyword bind ${SLOT_MODIFIER},${key},workspace,${ws_id};"
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && batch+="keyword bind ${MOVE_MODIFIER},${key},movetoworkspace,${ws_id};"
   done
+  hyprctl --batch "$batch" > /dev/null 2>&1 || true
 }
 
 unbind_slots() {
-  local slot=0 key
+  local slot=0 key batch=""
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                        > /dev/null 2>&1 || true
-    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                        > /dev/null 2>&1 || true
+    batch+="keyword unbind ${SLOT_MODIFIER},${key};"
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && batch+="keyword unbind ${MOVE_MODIFIER},${key};"
   done
+  hyprctl --batch "$batch" > /dev/null 2>&1 || true
 }
 
 is_passthrough() {
