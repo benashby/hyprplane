@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# hyprplane — plane-level workspace grouping for Hyprland
+# https://github.com/benashby/hyprplane
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+SLOTS=12
+SLOT_KEYS_RAW="F1,F2,F3,F4,F5,F6,F7,F8,F9,F10,F11,F12"
+SLOT_MODIFIER=""
+MOVE_MODIFIER="SHIFT"
+PERSISTENT_WORKSPACES_RAW=""
+PASSTHROUGH_WORKSPACES_RAW=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --slots)                  SLOTS="$2";                      shift 2 ;;
+    --slot-keys)              SLOT_KEYS_RAW="$2";              shift 2 ;;
+    --slot-modifier)          SLOT_MODIFIER="$2";              shift 2 ;;
+    --move-modifier)          MOVE_MODIFIER="$2";              shift 2 ;;
+    --persistent-workspaces)  PERSISTENT_WORKSPACES_RAW="$2";  shift 2 ;;
+    --passthrough-workspaces) PASSTHROUGH_WORKSPACES_RAW="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+IFS=',' read -ra SLOT_KEYS      <<< "$SLOT_KEYS_RAW"
+IFS=',' read -ra PASSTHROUGH_WS <<< "$PASSTHROUGH_WORKSPACES_RAW"
+# PERSISTENT_WORKSPACES_RAW used only for state.json output
+
+# ── state ─────────────────────────────────────────────────────────────────────
+
+PLANES=("default")
+CURRENT_NAME="default"
+CURRENT_INDEX=0
+declare -A LAST_SLOTS
+LAST_SLOTS["default"]=1
+
+STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
+FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
+
+# ── logging ───────────────────────────────────────────────────────────────────
+
+log()     { echo "[hyprplane] $*" | systemd-cat -t hyprplane -p info 2>/dev/null || echo "[hyprplane] $*" >&2; }
+log_err() { echo "[hyprplane] $*" | systemd-cat -t hyprplane -p err  2>/dev/null || echo "[hyprplane] ERROR: $*" >&2; }
+
+# ── state helpers ─────────────────────────────────────────────────────────────
+
+plane_index() {
+  local name="$1"
+  for i in "${!PLANES[@]}"; do
+    [[ "${PLANES[$i]}" == "$name" ]] && echo "$i" && return
+  done
+  echo "-1"
+}
+
+plane_base() {
+  echo $(( $1 * 100 ))
+}
+
+write_state() {
+  local planes_json last_slots_json persistent_json name
+  planes_json=$(printf '%s\n' "${PLANES[@]}" | jq -R . | jq -sc .)
+
+  last_slots_json="{}"
+  for name in "${!LAST_SLOTS[@]}"; do
+    last_slots_json=$(echo "$last_slots_json" | jq --arg n "$name" --argjson s "${LAST_SLOTS[$name]}" '. + {($n): $s}')
+  done
+
+  persistent_json=$(echo "$PERSISTENT_WORKSPACES_RAW" | tr ',' '\n' | grep -v '^$' | jq -R . | jq -sc . 2>/dev/null || echo '[]')
+
+  jq -n \
+    --argjson planes       "$planes_json" \
+    --arg     current      "$CURRENT_NAME" \
+    --argjson currentIndex "$CURRENT_INDEX" \
+    --argjson lastSlots    "$last_slots_json" \
+    --argjson persistent   "$persistent_json" \
+    '{planes:$planes,current:$current,currentIndex:$currentIndex,lastSlots:$lastSlots,persistentWorkspaces:$persistent}' \
+    > "$STATE_FILE"
+}
+
+# ── key binding ───────────────────────────────────────────────────────────────
+
+bind_slots() {
+  local index="$1" base slot ws_id key
+  base=$(plane_base "$index")
+  slot=0
+  for key in "${SLOT_KEYS[@]}"; do
+    slot=$(( slot + 1 ))
+    [[ $slot -gt $SLOTS ]] && break
+    ws_id=$(( base + slot ))
+    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"       > /dev/null
+    hyprctl keyword bind "${MOVE_MODIFIER},${key},movetoworkspace,${ws_id}"  > /dev/null
+  done
+}
+
+unbind_slots() {
+  local slot=0 key
+  for key in "${SLOT_KEYS[@]}"; do
+    slot=$(( slot + 1 ))
+    [[ $slot -gt $SLOTS ]] && break
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"  > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"  > /dev/null 2>&1 || true
+  done
+}
+
+is_passthrough() {
+  local ws_name="$1" pt
+  for pt in "${PASSTHROUGH_WS[@]}"; do
+    [[ "$ws_name" == "$pt" ]] && return 0
+  done
+  return 1
+}
+
+# ── plane operations ──────────────────────────────────────────────────────────
+
+switch_to_plane() {
+  local name="$1" index current_ws current_base target_slot target_ws
+  index=$(plane_index "$name")
+  [[ "$index" == "-1" ]] && { log_err "plane not found: $name"; return; }
+
+  current_ws=$(hyprctl activeworkspace -j | jq -r '.id')
+  current_base=$(plane_base "$CURRENT_INDEX")
+  LAST_SLOTS["$CURRENT_NAME"]=$(( current_ws - current_base ))
+
+  CURRENT_NAME="$name"
+  CURRENT_INDEX="$index"
+
+  target_slot="${LAST_SLOTS[$name]:-1}"
+  target_ws=$(( $(plane_base "$index") + target_slot ))
+
+  bind_slots "$CURRENT_INDEX"
+  hyprctl dispatch workspace "$target_ws" > /dev/null
+  write_state
+  log "switched to plane '$name' (index=$index, slot=$target_slot, ws=$target_ws)"
+}
+
+create_plane() {
+  local name="$1" new_index base slot ws_id key
+  if [[ $(plane_index "$name") != "-1" ]]; then
+    log_err "plane already exists: $name"; return
+  fi
+
+  PLANES+=("$name")
+  LAST_SLOTS["$name"]=1
+  write_state
+
+  new_index=$(( ${#PLANES[@]} - 1 ))
+  base=$(plane_base "$new_index")
+
+  # rename Hyprland workspace IDs so waybar {name} shows "1".."N" not "101".."112"
+  slot=0
+  for key in "${SLOT_KEYS[@]}"; do
+    slot=$(( slot + 1 ))
+    [[ $slot -gt $SLOTS ]] && break
+    ws_id=$(( base + slot ))
+    hyprctl dispatch renameworkspace "$ws_id" "$slot" > /dev/null 2>&1 || true
+  done
+
+  log "created plane '$name' (index=$new_index, base=$base)"
+  switch_to_plane "$name"
+}
+
+rename_plane() {
+  local old="$1" new="$2" index
+  [[ "$old" == "default" ]] && { log_err "cannot rename default plane"; return; }
+  index=$(plane_index "$old")
+  [[ "$index" == "-1" ]] && { log_err "plane not found: $old"; return; }
+
+  PLANES[$index]="$new"
+  LAST_SLOTS["$new"]="${LAST_SLOTS[$old]}"
+  unset "LAST_SLOTS[$old]"
+  [[ "$CURRENT_NAME" == "$old" ]] && CURRENT_NAME="$new"
+
+  write_state
+  log "renamed plane '$old' → '$new'"
+}
+
+delete_plane() {
+  local name="$1" index del_base default_base slot src_ws dst_ws addr key new_planes p
+  [[ "$name" == "default" ]] && { log_err "cannot delete default plane"; return; }
+  index=$(plane_index "$name")
+  [[ "$index" == "-1" ]] && { log_err "plane not found: $name"; return; }
+
+  del_base=$(plane_base "$index")
+  default_base=$(plane_base 0)
+
+  # move all windows from this plane's slots to default's corresponding slots
+  slot=0
+  for key in "${SLOT_KEYS[@]}"; do
+    slot=$(( slot + 1 ))
+    [[ $slot -gt $SLOTS ]] && break
+    src_ws=$(( del_base + slot ))
+    dst_ws=$(( default_base + slot ))
+    while IFS= read -r addr; do
+      hyprctl dispatch movewindowpixel "movetoworkspacesilent,${dst_ws},address:${addr}" > /dev/null 2>&1 || true
+    done < <(hyprctl clients -j 2>/dev/null | jq -r --argjson ws "$src_ws" '.[] | select(.workspace.id == $ws) | .address')
+  done
+
+  new_planes=()
+  for p in "${PLANES[@]}"; do
+    [[ "$p" != "$name" ]] && new_planes+=("$p")
+  done
+  PLANES=("${new_planes[@]}")
+  unset "LAST_SLOTS[$name]"
+
+  if [[ "$CURRENT_NAME" == "$name" ]]; then
+    CURRENT_NAME="default"
+    CURRENT_INDEX=0
+    bind_slots 0
+    hyprctl dispatch workspace "$(( default_base + 1 ))" > /dev/null
+  else
+    CURRENT_INDEX=$(plane_index "$CURRENT_NAME")
+  fi
+
+  write_state
+  log "deleted plane '$name', windows moved to default"
+}
+
+# ── event handlers ────────────────────────────────────────────────────────────
+
+handle_socket_event() {
+  local line="$1" event data ws_name active_ws_name
+  event="${line%%>>*}"
+  data="${line#*>>}"
+
+  case "$event" in
+    workspace|workspacev2)
+      # workspacev2 data is "id,name"; workspace data is just the name
+      if [[ "$event" == "workspacev2" ]]; then
+        ws_name="${data#*,}"
+      else
+        ws_name="$data"
+      fi
+
+      if is_passthrough "$ws_name"; then
+        log "entering passthrough workspace '$ws_name' — unbinding slots"
+        unbind_slots
+      else
+        log "workspace → '$ws_name', rebinding slots for plane '$CURRENT_NAME'"
+        bind_slots "$CURRENT_INDEX"
+      fi
+      ;;
+    configreloaded)
+      log "configreloaded — restoring bind state"
+      active_ws_name=$(hyprctl activeworkspace -j | jq -r '.name')
+      if is_passthrough "$active_ws_name"; then
+        unbind_slots
+      else
+        bind_slots "$CURRENT_INDEX"
+      fi
+      ;;
+  esac
+}
+
+handle_fifo_command() {
+  local cmd="$1" op args old new
+  op="${cmd%%:*}"
+  args="${cmd#*:}"
+
+  case "$op" in
+    switch) switch_to_plane "$args" ;;
+    create) create_plane "$args" ;;
+    rename)
+      old="${args%%:*}"
+      new="${args#*:}"
+      rename_plane "$old" "$new"
+      ;;
+    delete) delete_plane "$args" ;;
+    # TODO: future — move:<window_address>:<plane_name>
+    *) log_err "unknown FIFO command: $cmd" ;;
+  esac
+}
+
+# ── instance discovery ────────────────────────────────────────────────────────
+
+discover_instance() {
+  HYPRLAND_INSTANCE_SIGNATURE=$(
+    find "${XDG_RUNTIME_DIR}/hypr/" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+      | head -1 | xargs basename 2>/dev/null
+  )
+  [[ -n "$HYPRLAND_INSTANCE_SIGNATURE" ]] && export HYPRLAND_INSTANCE_SIGNATURE
+}
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+
+log "starting (slots=$SLOTS, keys=${SLOT_KEYS_RAW})"
+
+# Create command FIFO (persists for daemon lifetime)
+[[ -p "$FIFO_PATH" ]] || mkfifo "$FIFO_PATH"
+
+while true; do
+  [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && discover_instance
+
+  SOCKET="${XDG_RUNTIME_DIR}/hypr/${HYPRLAND_INSTANCE_SIGNATURE}/.socket2.sock"
+
+  if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || [[ ! -S "$SOCKET" ]]; then
+    log_err "socket not found (sig=${HYPRLAND_INSTANCE_SIGNATURE:-unset}), retrying in 2s"
+    HYPRLAND_INSTANCE_SIGNATURE=""
+    sleep 2
+    continue
+  fi
+
+  # Restore state on (re)connect
+  write_state
+  bind_slots "$CURRENT_INDEX"
+  active_ws_name=$(hyprctl activeworkspace -j | jq -r '.name')
+  is_passthrough "$active_ws_name" && unbind_slots
+  log "connected, active workspace: $active_ws_name"
+
+  # Aggregated pipe — both sources write here, single reader handles all events.
+  # Opened read-write (exec 3<>) to prevent EOF when individual writers exit.
+  AGG=$(mktemp -u)
+  mkfifo "$AGG"
+  exec 3<>"$AGG"
+
+  # socket2 feeder — prefixes lines "S:", sends sentinel "X:" on disconnect
+  (socat -U - "UNIX-CONNECT:${SOCKET}" | sed 's/^/S:/'; echo 'X:disconnect') >&3 &
+  SOCAT_PID=$!
+
+  # FIFO feeder — persistent, prefixes lines "C:"
+  (while true; do
+    read -r cmd < "$FIFO_PATH" && printf 'C:%s\n' "$cmd" >&3
+  done) &
+  FIFO_PID=$!
+
+  # Main event loop — single bash process owns all state, no concurrency issues
+  raw=""
+  while IFS= read -r raw <&3; do
+    case "${raw:0:2}" in
+      S:) handle_socket_event "${raw:2}" ;;
+      C:) handle_fifo_command "${raw:2}" ;;
+      X:) break ;;  # socket2 disconnected
+    esac
+  done
+
+  # Cleanup and reconnect
+  kill "$SOCAT_PID" "$FIFO_PID" 2>/dev/null || true
+  exec 3>&-
+  rm -f "$AGG"
+  log_err "socket disconnected, reconnecting in 1s"
+  HYPRLAND_INSTANCE_SIGNATURE=""
+  sleep 1
+done
