@@ -92,14 +92,56 @@ esac
 
 ## Waybar
 
-Use `hyprplane-status` as a `custom/` module:
+`hyprplane-status` outputs a JSON object that waybar's `custom/` module understands via `return-type: "json"`:
+
+```json
+{ "text": "default", "tooltip": "default · work · research", "class": "hyprplane", "alt": "3" }
+```
+
+- **text** — current plane name, displayed in the bar
+- **tooltip** — all planes joined with ` · `, shown on hover
+- **class** — CSS class applied to the element (`hyprplane` when running, `hyprplane-inactive` when daemon is not running)
+- **alt** — plane count; available as `{alt}` in your `format` string if you want it
+
+### Module config
 
 ```json
 "custom/hyprplane": {
   "exec": "hyprplane-status",
   "interval": 2,
   "return-type": "json",
-  "on-click": "your-launcher-script"
+  "format": "  {}",
+  "tooltip": true,
+  "on-click": "hypr-your-launcher"
+}
+```
+
+`on-click` runs a shell command when you left-click the widget. Point it at whatever script drives your FIFO launcher. The script reads `hyprplane.json` for current state and writes commands to `hyprplane.fifo` — clicking the widget is just a trigger to open that script.
+
+If you want instant updates instead of polling every 2 seconds, use a signal:
+
+```json
+"custom/hyprplane": {
+  "exec": "hyprplane-status",
+  "signal": 8,
+  "return-type": "json",
+  "format": "  {}",
+  "on-click": "hypr-your-launcher"
+}
+```
+
+Then have your launcher send `pkill -RTMIN+8 waybar` after writing to the FIFO. Waybar re-runs `hyprplane-status` immediately on that signal, so the bar updates the moment you switch planes rather than waiting for the next poll.
+
+### Styling
+
+```css
+#custom-hyprplane {
+  color: @text;
+  padding: 0 8px;
+}
+
+#custom-hyprplane.hyprplane-inactive {
+  color: @surface2;
 }
 ```
 
