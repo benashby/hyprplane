@@ -49,11 +49,11 @@ render() {
 
     ws_name=$(jq -r --argjson id "$ws_id" '.[] | select(.id == $id) | .name' <<< "$all_ws" 2>/dev/null)
 
-    # Strip "N: " prefix from user renames (e.g. "9: devd" → "devd")
+    # Show named slots as "N:name" so the slot number is always visible
     if [[ "$ws_name" =~ ^[0-9]+:[[:space:]](.+)$ ]]; then
-      label="${BASH_REMATCH[1]}"; is_named=1
+      label="${slot}:${BASH_REMATCH[1]}"; is_named=1
     elif [[ -n "$ws_name" && "$ws_name" != "$slot" ]]; then
-      label="$ws_name"; is_named=1
+      label="${slot}:${ws_name}"; is_named=1
     else
       label="$slot"
     fi
