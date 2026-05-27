@@ -48,4 +48,56 @@ Read this file directly from your launcher to render current state. There is no 
 
 ## Building a launcher
 
-Any tool that can write a line to a FIFO works: shell scripts, rofi custom modes, wofi scripts, anyrun plugins, Python, etc. See the README for an example rofi shell script.
+Any tool that can write a line to a FIFO works. A few common patterns:
+
+### Shell
+
+```bash
+# one-shot dispatch
+echo "switch:work" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+
+# read state, then dispatch
+CURRENT=$(jq -r '.current' < "$XDG_RUNTIME_DIR/hyprplane.json")
+echo "rename:${CURRENT}:job" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+```
+
+### Python
+
+```python
+import os, json, pathlib
+
+fifo = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "hyprplane.fifo"
+state_file = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "hyprplane.json"
+
+def send(cmd: str):
+    fifo.open("w").write(cmd + "\n")
+
+def state():
+    return json.loads(state_file.read_text())
+
+send("create:work")
+send(f"rename:{state()['current']}:job")
+```
+
+### Waybar on-click
+
+```json
+"custom/hyprplane": {
+  "exec": "hyprplane-status",
+  "interval": 2,
+  "return-type": "json",
+  "on-click": "your-launcher-script",
+  "on-right-click": "bash -c 'echo create:$(date +%H%M) > $XDG_RUNTIME_DIR/hyprplane.fifo'"
+}
+```
+
+### wofi (minimal example)
+
+```bash
+#!/usr/bin/env bash
+PLANES=$(jq -r '.planes[]' < "$XDG_RUNTIME_DIR/hyprplane.json")
+CHOSEN=$(echo "$PLANES" | wofi --dmenu --prompt "plane")
+[[ -n "$CHOSEN" ]] && echo "switch:$CHOSEN" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+```
+
+See the README for a fuller rofi example that includes create/rename/delete.
