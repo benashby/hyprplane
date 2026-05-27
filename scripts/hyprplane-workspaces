@@ -16,6 +16,13 @@
 
 STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
 
+# ── colors (Catppuccin Mocha) ─────────────────────────────────────────────────
+ACTIVE_FG='#cba6f7'   # mauve  — active slot
+NAMED_FG='#89b4fa'    # blue   — inactive named slots
+NUM_FG='#6c7086'      # overlay0 — inactive numeric slots
+SEP_FG='#45475a'      # surface1 — separator
+SEP="<span foreground=\"${SEP_FG}\">  ·  </span>"
+
 # ── rendering ─────────────────────────────────────────────────────────────────
 
 render() {
@@ -35,33 +42,38 @@ render() {
   all_ws=$(hyprctl workspaces -j 2>/dev/null || echo "[]")
   active_id=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // -9999')
 
-  # Show all slots 1..N — never-visited slots fall back to the slot number
   local parts=()
   for (( slot = 1; slot <= slots; slot++ )); do
     local ws_id=$(( base + slot ))
-    local ws_name display label
+    local ws_name label is_named=0
 
     ws_name=$(jq -r --argjson id "$ws_id" '.[] | select(.id == $id) | .name' <<< "$all_ws" 2>/dev/null)
 
-    # Strip "N: " prefix added by hyprplane's rename (e.g. "9: devd" → "devd")
+    # Strip "N: " prefix from user renames (e.g. "9: devd" → "devd")
     if [[ "$ws_name" =~ ^[0-9]+:[[:space:]](.+)$ ]]; then
-      label="${BASH_REMATCH[1]}"
+      label="${BASH_REMATCH[1]}"; is_named=1
     elif [[ -n "$ws_name" && "$ws_name" != "$slot" ]]; then
-      label="$ws_name"
+      label="$ws_name"; is_named=1
     else
       label="$slot"
     fi
 
+    # Escape Pango entities — workspace names are user input
+    label="${label//&/&amp;}"
+    label="${label//</&lt;}"
+    label="${label//>/&gt;}"
+
     if [[ "$ws_id" == "$active_id" ]]; then
-      parts+=("<b>${label}</b>")
+      parts+=("<span foreground=\"${ACTIVE_FG}\" weight=\"bold\">[${label}]</span>")
+    elif (( is_named )); then
+      parts+=("<span foreground=\"${NAMED_FG}\">${label}</span>")
     else
-      parts+=("$label")
+      parts+=("<span foreground=\"${NUM_FG}\">${label}</span>")
     fi
   done
 
   local text
-  text=$(printf '%s  ' "${parts[@]}")
-  text="${text%  }"  # trim trailing separator
+  text=$(printf "%s${SEP}" "${parts[@]}"); text="${text%${SEP}}"
 
   jq -cn \
     --arg text    "$text" \
@@ -77,7 +89,7 @@ discover_instance() {
     | head -1 | xargs basename 2>/dev/null
 }
 
-render  # initial output on startup
+render
 
 while true; do
   SIG="${HYPRLAND_INSTANCE_SIGNATURE:-$(discover_instance)}"
