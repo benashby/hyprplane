@@ -93,6 +93,14 @@ write_state() {
 bind_slots() {
   local index="$1" base slot ws_id key
   base=$(plane_base "$index")
+  # unbind first — hyprctl keyword bind accumulates, not replaces
+  slot=0
+  for key in "${SLOT_KEYS[@]}"; do
+    slot=$(( slot + 1 ))
+    [[ $slot -gt $SLOTS ]] && break
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"   > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"   > /dev/null 2>&1 || true
+  done
   slot=0
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
