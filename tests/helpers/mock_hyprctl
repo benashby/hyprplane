@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Mock hyprctl for hyprplane tests.
+# Records calls to $HYPRCTL_LOG if set; returns sensible JSON for queries.
+
+[[ -n "${HYPRCTL_LOG:-}" ]] && echo "$*" >> "$HYPRCTL_LOG"
+
+case "$1" in
+  activeworkspace) echo '{"id":1,"name":"1"}' ;;
+  clients)         echo '[]' ;;
+  workspaces)      echo '[]' ;;
+  --batch|keyword|dispatch) echo "ok" ;;
+  *)               echo "ok" ;;
+esac
+exit 0

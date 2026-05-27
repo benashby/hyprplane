@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: shellcheck
+        run: nix shell nixpkgs#shellcheck -c shellcheck scripts/hyprplane scripts/hyprplane-status
+
+      - name: bats
+        run: nix shell nixpkgs#bats nixpkgs#jq -c bats tests/
