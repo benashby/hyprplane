@@ -132,6 +132,11 @@ OPTIONS="$OPTIONS
 
 ## Waybar
 
+`hyprplane-status` is a small script that reads `$XDG_RUNTIME_DIR/hyprplane.json` and prints a JSON object for waybar. **It must be in your PATH** — waybar runs it as a subprocess and will silently show nothing if it can't find it.
+
+- **Nix (HM module):** `programs.hyprplane.enable = true` adds the package to `home.packages` automatically. Both `hyprplane` and `hyprplane-status` land in your profile PATH.
+- **Without Nix:** `make PREFIX=~/.local install` puts both in `~/.local/bin/`. Make sure that's on your PATH before waybar starts.
+
 `hyprplane-status` outputs a JSON object that waybar's `custom/` module understands via `return-type: "json"`:
 
 ```json
