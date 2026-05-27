@@ -80,8 +80,11 @@ in
     };
   };
 
-  config = mkIf (cfg.enable && cfg.systemd.enable) {
-    systemd.user.services.hyprplane = {
+  config = mkIf cfg.enable {
+    # expose both binaries in PATH — needed for waybar exec and manual use
+    home.packages = [ cfg.package ];
+
+    systemd.user.services.hyprplane = mkIf cfg.systemd.enable {
       Unit = {
         Description = "hyprplane workspace plane manager";
         After       = [ cfg.systemd.target ];
@@ -110,5 +113,6 @@ in
       };
       Install.WantedBy = [ cfg.systemd.target ];
     };
-  };
+  }; # end mkIf cfg.systemd.enable
+}; # end mkIf cfg.enable
 }
