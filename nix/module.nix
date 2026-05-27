@@ -89,15 +89,20 @@ in
       };
       Service = {
         Type       = "simple";
-        ExecStart  = lib.concatStringsSep " " [
-          "${cfg.package}/bin/hyprplane"
-          "--slots"                  (toString cfg.settings.slotsPerPlane)
-          "--slot-keys"              slotKeysStr
-          "--slot-modifier"          cfg.settings.slot.modifier
-          "--move-modifier"          cfg.settings.slot.moveModifier
-          "--persistent-workspaces"  persistentStr
-          "--passthrough-workspaces" passthroughStr
-        ];
+        ExecStart  = lib.concatStringsSep " " (
+          [
+            "${cfg.package}/bin/hyprplane"
+            "--slots"                 (toString cfg.settings.slotsPerPlane)
+            "--slot-keys"             slotKeysStr
+          ]
+          # omit --slot-modifier entirely when empty; daemon defaults to "" anyway
+          ++ lib.optionals (cfg.settings.slot.modifier != "") [ "--slot-modifier" cfg.settings.slot.modifier ]
+          ++ [
+            "--move-modifier"         cfg.settings.slot.moveModifier
+            "--persistent-workspaces" persistentStr
+            "--passthrough-workspaces" passthroughStr
+          ]
+        );
         Restart          = "on-failure";
         RestartSec       = "3s";
         Environment      = [ "XDG_RUNTIME_DIR=%t" ];
