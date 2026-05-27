@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
 # hyprplane-workspaces — waybar custom module for hyprplane
 #
-# Long-running continuous exec script. Outputs one JSON line per workspace
-# event so waybar updates instantly without polling.
-#
-# Replaces hyprland/workspaces. Add to your waybar config:
+# Long-running continuous exec. Outputs one JSON line per workspace event
+# so waybar updates instantly. Add to your waybar config:
 #
 #   "custom/hyprplane-workspaces": {
-#     "exec": "hyprplane-workspaces",
-#     "return-type": "json",
+#     "exec":           "hyprplane-workspaces",
+#     "return-type":    "json",
+#     "markup":         true,
 #     "on-scroll-up":   "echo prev > $XDG_RUNTIME_DIR/hyprplane.fifo",
 #     "on-scroll-down": "echo next > $XDG_RUNTIME_DIR/hyprplane.fifo",
 #     "on-click-right": "your-hyprplane-launcher-script",
-#     "tooltip": true
+#     "tooltip":        true
 #   }
 
 STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
-FIFO="${XDG_RUNTIME_DIR}/hyprplane.fifo"
 
 # ── rendering ─────────────────────────────────────────────────────────────────
 
@@ -26,62 +24,49 @@ render() {
     return
   fi
 
-  local state current_index base slots persistent_names
-  state=$(cat "$STATE_FILE")
-  current_index=$(jq -r '.currentIndex'          < "$STATE_FILE")
-  slots=$(jq -r        '.slots // 12'            < "$STATE_FILE")
+  local current_name current_index slots base all_planes
+  current_name=$(jq -r  '.current'             < "$STATE_FILE")
+  current_index=$(jq -r '.currentIndex'         < "$STATE_FILE")
+  slots=$(jq -r         '.slots // 12'          < "$STATE_FILE")
   base=$(( current_index * 100 ))
-
-  # Persistent workspace names (browsers, chat, gaming, etc.)
-  mapfile -t persistent_names < <(jq -r '.persistentWorkspaces[]?' < "$STATE_FILE")
+  all_planes=$(jq -r    '.planes | join(" › ")' < "$STATE_FILE")
 
   local all_ws active_id
   all_ws=$(hyprctl workspaces -j 2>/dev/null || echo "[]")
   active_id=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // -9999')
 
-  # ── slot workspaces (current plane only) ────────────────────────────────────
-  local slot_parts=()
-  while IFS=$'\t' read -r ws_id ws_name; do
-    local slot=$(( ws_id - base ))
-    (( slot >= 1 && slot <= slots )) || continue
+  # Show all slots 1..N — never-visited slots fall back to the slot number
+  local parts=()
+  for (( slot = 1; slot <= slots; slot++ )); do
+    local ws_id=$(( base + slot ))
+    local ws_name display label
 
-    local display="$ws_name"
-    [[ "$ws_id" == "$active_id" ]] && display="<b>${ws_name}</b>"
-    slot_parts+=("$display")
-  done < <(jq -r '.[] | select(.id > 0) | [.id, .name] | @tsv' <<< "$all_ws" | sort -n)
+    ws_name=$(jq -r --argjson id "$ws_id" '.[] | select(.id == $id) | .name' <<< "$all_ws" 2>/dev/null)
 
-  # ── named persistent workspaces ─────────────────────────────────────────────
-  local named_parts=()
-  for name in "${persistent_names[@]}"; do
-    [[ -z "$name" ]] && continue
-    local display="$name"
-    local ws_id
-    ws_id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<< "$all_ws")
-    [[ "$ws_id" == "$active_id" ]] && display="<b>${name}</b>"
-    named_parts+=("$display")
+    # Strip "N: " prefix added by hyprplane's rename (e.g. "9: devd" → "devd")
+    if [[ "$ws_name" =~ ^[0-9]+:[[:space:]](.+)$ ]]; then
+      label="${BASH_REMATCH[1]}"
+    elif [[ -n "$ws_name" && "$ws_name" != "$slot" ]]; then
+      label="$ws_name"
+    else
+      label="$slot"
+    fi
+
+    if [[ "$ws_id" == "$active_id" ]]; then
+      parts+=("<b>${label}</b>")
+    else
+      parts+=("$label")
+    fi
   done
 
-  # ── assemble output ──────────────────────────────────────────────────────────
-  local slots_text named_text text
-  slots_text=$(IFS="  "; echo "${slot_parts[*]}")
-  named_text=$(IFS="  "; echo "${named_parts[*]}")
-
-  if [[ -n "$slots_text" && -n "$named_text" ]]; then
-    text="${slots_text}  <span alpha='50%'>│</span>  ${named_text}"
-  elif [[ -n "$slots_text" ]]; then
-    text="$slots_text"
-  else
-    text="$named_text"
-  fi
-
-  local current_name all_planes
-  current_name=$(jq -r '.current'                 < "$STATE_FILE")
-  all_planes=$(jq -r   '.planes | join(" › ")'   < "$STATE_FILE")
+  local text
+  text=$(printf '%s  ' "${parts[@]}")
+  text="${text%  }"  # trim trailing separator
 
   jq -cn \
-    --arg text      "$text" \
-    --arg tooltip   "plane: ${current_name}  ·  ${all_planes}" \
-    --arg class     "hyprplane-workspaces" \
+    --arg text    "$text" \
+    --arg tooltip "plane: ${current_name}  ·  ${all_planes}" \
+    --arg class   "hyprplane-workspaces" \
     '{text:$text, tooltip:$tooltip, class:$class}'
 }
 
@@ -92,7 +77,7 @@ discover_instance() {
     | head -1 | xargs basename 2>/dev/null
 }
 
-render  # initial output
+render  # initial output on startup
 
 while true; do
   SIG="${HYPRLAND_INSTANCE_SIGNATURE:-$(discover_instance)}"
