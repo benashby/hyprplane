@@ -113,6 +113,5 @@ in
       };
       Install.WantedBy = [ cfg.systemd.target ];
     };
-  }; # end mkIf cfg.systemd.enable
-}; # end mkIf cfg.enable
+  };
 }
