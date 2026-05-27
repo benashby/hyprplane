@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# hyprplane-status — waybar status output for hyprplane
+
+STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
+
+if [[ ! -f "$STATE_FILE" ]]; then
+  echo '{"text":"","tooltip":"hyprplane not running","class":"hyprplane-inactive"}'
+  exit 0
+fi
+
+current=$(jq -r '.current'             < "$STATE_FILE")
+planes=$(jq -r '.planes | join(" · ")' < "$STATE_FILE")
+count=$(jq -r '.planes | length'        < "$STATE_FILE")
+
+echo "{\"text\":\"${current}\",\"tooltip\":\"${planes}\",\"class\":\"hyprplane\",\"alt\":\"${count}\"}"
