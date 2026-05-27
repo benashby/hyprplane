@@ -203,30 +203,42 @@ delete_plane() {
 
 # ── event handlers ────────────────────────────────────────────────────────────
 
-# Tracks passthrough state and last seen workspace to deduplicate events.
-# Hyprland fires both `workspace` and `workspacev2` for the same switch —
-# we only act on `workspacev2` (canonical) and skip repeated workspace names.
+# Tracks whether we're currently in a passthrough workspace.
 IN_PASSTHROUGH=0
-LAST_WS_NAME=""
 
 handle_socket_event() {
-  local line="$1" event data ws_name active_ws_name
+  local line="$1" event data ws_id ws_name active_ws_name _pi _base _slot
   event="${line%%>>*}"
   data="${line#*>>}"
 
   case "$event" in
     workspacev2)
       # data format: "id,name"
+      ws_id="${data%%,*}"
       ws_name="${data#*,}"
 
-      # Skip duplicate events for the same workspace
-      [[ "$ws_name" == "$LAST_WS_NAME" ]] && return
-      LAST_WS_NAME="$ws_name"
+      # Lazy rename: Hyprland only accepts renameworkspace on existing workspaces.
+      # When a slot is first visited its name equals its numeric ID. Detect that
+      # here (workspace now exists) and rename it to the local slot number so
+      # waybar shows "1".."N" instead of "101".."112".
+      if [[ "$ws_name" == "$ws_id" && "$ws_id" =~ ^[0-9]+$ ]]; then
+        for _pi in "${!PLANES[@]}"; do
+          _base=$(plane_base "$_pi")
+          _slot=$(( ws_id - _base ))
+          if (( _slot >= 1 && _slot <= SLOTS )); then
+            hyprctl dispatch renameworkspace "$ws_id" "$_slot" > /dev/null 2>&1 || true
+            ws_name="$_slot"
+            break
+          fi
+        done
+      fi
 
       if is_passthrough "$ws_name"; then
-        log "entering passthrough workspace '$ws_name' — unbinding slots"
-        unbind_slots
-        IN_PASSTHROUGH=1
+        if [[ "$IN_PASSTHROUGH" == "0" ]]; then
+          log "entering passthrough workspace '$ws_name' — unbinding slots"
+          unbind_slots
+          IN_PASSTHROUGH=1
+        fi
       elif [[ "$IN_PASSTHROUGH" == "1" ]]; then
         log "leaving passthrough, rebinding slots for plane '$CURRENT_NAME'"
         bind_slots "$CURRENT_INDEX"
@@ -238,7 +250,6 @@ handle_socket_event() {
       # Hyprland wiped all dynamic binds — must always restore
       log "configreloaded — restoring bind state"
       active_ws_name=$(hyprctl activeworkspace -j | jq -r '.name')
-      LAST_WS_NAME="$active_ws_name"
       if is_passthrough "$active_ws_name"; then
         unbind_slots
         IN_PASSTHROUGH=1
