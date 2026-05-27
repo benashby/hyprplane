@@ -29,12 +29,13 @@ programs.hyprplane = {
   # systemd.target = "graphical-session.target";
 
   settings = {
-    slotsPerPlane         = 12;
+    # slot.keys and slot.moveModifier are required — no defaults are assumed
+    slot.keys         = [ "F1" "F2" "F3" "F4" "F5" "F6" "F7" "F8" "F9" "F10" "F11" "F12" ];
+    slot.modifier     = "";      # empty = no modifier
+    slot.moveModifier = "SHIFT"; # use "NONE" to disable move-to-slot bindings
+
     persistentWorkspaces  = [ "gaming" "browsers" "chat" ];
     passthroughWorkspaces = [ "gaming" ];
-    slot.keys             = [ "F1" "F2" "F3" "F4" "F5" "F6" "F7" "F8" "F9" "F10" "F11" "F12" ];
-    slot.modifier         = "";
-    slot.moveModifier     = "SHIFT";
   };
 };
 ```
@@ -45,17 +46,17 @@ programs.hyprplane = {
 make PREFIX=~/.local install
 ```
 
-Then start the daemon:
+Then start the daemon. `--slot-keys` and `--move-modifier` are required:
 
 ```bash
 hyprplane \
-  --slots 12 \
   --slot-keys "F1,F2,F3,F4,F5,F6,F7,F8,F9,F10,F11,F12" \
-  --slot-modifier "" \
   --move-modifier "SHIFT" \
   --persistent-workspaces "gaming,browsers" \
   --passthrough-workspaces "gaming" &
 ```
+
+`--slots` defaults to the number of keys provided. `--slot-modifier` defaults to no modifier. Use `--move-modifier NONE` to disable move-to-slot bindings.
 
 ## Launcher
 

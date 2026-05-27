@@ -59,9 +59,9 @@ in
 
       slot = {
         keys = mkOption {
-          type    = types.listOf types.str;
-          default = [ "F1" "F2" "F3" "F4" "F5" "F6" "F7" "F8" "F9" "F10" "F11" "F12" ];
-          description = "Key names for slot bindings (any Hyprland key name).";
+          type        = types.nonEmptyListOf types.str;
+          description = "Key names for slot bindings (any Hyprland key name). Required — hyprplane binds no keys by default.";
+          example     = [ "F1" "F2" "F3" "F4" "F5" "F6" "F7" "F8" "F9" "F10" "F11" "F12" ];
         };
 
         modifier = mkOption {
@@ -72,9 +72,9 @@ in
         };
 
         moveModifier = mkOption {
-          type    = types.str;
-          default = "SHIFT";
-          description = "Modifier for move-window-to-slot bindings.";
+          type        = types.str;
+          description = "Modifier for move-window-to-slot bindings. Use \"NONE\" to disable move-to-slot bindings entirely. Required.";
+          example     = "SHIFT";
         };
       };
     };
@@ -92,16 +92,14 @@ in
         ExecStart  = lib.concatStringsSep " " (
           [
             "${cfg.package}/bin/hyprplane"
-            "--slots"                 (toString cfg.settings.slotsPerPlane)
-            "--slot-keys"             slotKeysStr
-          ]
-          # omit --slot-modifier entirely when empty; daemon defaults to "" anyway
-          ++ lib.optionals (cfg.settings.slot.modifier != "") [ "--slot-modifier" cfg.settings.slot.modifier ]
-          ++ [
-            "--move-modifier"         cfg.settings.slot.moveModifier
-            "--persistent-workspaces" persistentStr
+            "--slots"                  (toString cfg.settings.slotsPerPlane)
+            "--slot-keys"              slotKeysStr
+            "--move-modifier"          cfg.settings.slot.moveModifier
+            "--persistent-workspaces"  persistentStr
             "--passthrough-workspaces" passthroughStr
           ]
+          # omit --slot-modifier when empty — systemd tokenizer drops empty args
+          ++ lib.optionals (cfg.settings.slot.modifier != "") [ "--slot-modifier" cfg.settings.slot.modifier ]
         );
         Restart          = "on-failure";
         RestartSec       = "3s";

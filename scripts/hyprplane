@@ -4,10 +4,10 @@
 
 # ── argument parsing ──────────────────────────────────────────────────────────
 
-SLOTS=12
-SLOT_KEYS_RAW="F1,F2,F3,F4,F5,F6,F7,F8,F9,F10,F11,F12"
+SLOTS=""
+SLOT_KEYS_RAW=""
 SLOT_MODIFIER=""
-MOVE_MODIFIER="SHIFT"
+MOVE_MODIFIER=""
 PERSISTENT_WORKSPACES_RAW=""
 PASSTHROUGH_WORKSPACES_RAW=""
 
@@ -19,13 +19,30 @@ while [[ $# -gt 0 ]]; do
     --move-modifier)          MOVE_MODIFIER="$2";              shift 2 ;;
     --persistent-workspaces)  PERSISTENT_WORKSPACES_RAW="$2";  shift 2 ;;
     --passthrough-workspaces) PASSTHROUGH_WORKSPACES_RAW="$2"; shift 2 ;;
-    *) echo "unknown arg: $1" >&2; exit 1 ;;
+    *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
+
+# --slot-keys is required — hyprplane does not assume which keys you want bound
+if [[ -z "$SLOT_KEYS_RAW" ]]; then
+  echo "error: --slot-keys is required (e.g. --slot-keys F1,F2,F3,F4,F5)" >&2
+  echo "       hyprplane will not bind any keys by default to avoid conflicts" >&2
+  exit 1
+fi
+
+# --move-modifier is required — no safe default to assume
+if [[ -z "$MOVE_MODIFIER" ]]; then
+  echo "error: --move-modifier is required (e.g. --move-modifier SHIFT)" >&2
+  echo "       use --move-modifier NONE to disable move-to-slot bindings" >&2
+  exit 1
+fi
 
 IFS=',' read -ra SLOT_KEYS      <<< "$SLOT_KEYS_RAW"
 IFS=',' read -ra PASSTHROUGH_WS <<< "$PASSTHROUGH_WORKSPACES_RAW"
 # PERSISTENT_WORKSPACES_RAW used only for state.json output
+
+# derive slot count from key list if not explicitly provided
+[[ -z "$SLOTS" ]] && SLOTS="${#SLOT_KEYS[@]}"
 
 # ── state ─────────────────────────────────────────────────────────────────────
 
@@ -98,16 +115,18 @@ bind_slots() {
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"   > /dev/null 2>&1 || true
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"   > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                    > /dev/null 2>&1 || true
   done
   slot=0
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
     ws_id=$(( base + slot ))
-    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"       > /dev/null
-    hyprctl keyword bind "${MOVE_MODIFIER},${key},movetoworkspace,${ws_id}"  > /dev/null
+    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"  > /dev/null
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
+    hyprctl keyword bind "${MOVE_MODIFIER},${key},movetoworkspace,${ws_id}" > /dev/null
   done
 }
 
@@ -116,8 +135,9 @@ unbind_slots() {
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"  > /dev/null 2>&1 || true
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"  > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    [[ "$MOVE_MODIFIER" != "NONE" ]] && \
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                    > /dev/null 2>&1 || true
   done
 }
 
