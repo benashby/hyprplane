@@ -364,6 +364,33 @@ LAST_SLOTS["default"]=1
 STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
 FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
 
+# Rehydrate from previous state if the JSON survives this restart.
+# $XDG_RUNTIME_DIR is a tmpfs that persists for the whole login session, so
+# daemon restarts within the same session (e.g. nixos-rebuild switch) find the
+# file intact. On logout/reboot the tmpfs clears — session-only promise holds.
+if [[ -f "$STATE_FILE" ]]; then
+  _saved_planes=$(jq -r '.planes[]?' < "$STATE_FILE" 2>/dev/null)
+  _saved_current=$(jq -r '.current?'  < "$STATE_FILE" 2>/dev/null)
+  if [[ -n "$_saved_planes" && -n "$_saved_current" ]]; then
+    PLANES=()
+    declare -A LAST_SLOTS
+    while IFS= read -r _p; do
+      [[ -z "$_p" ]] && continue
+      PLANES+=("$_p")
+      _s=$(jq -r --arg n "$_p" '.lastSlots[$n] // 1' < "$STATE_FILE" 2>/dev/null)
+      LAST_SLOTS["$_p"]="${_s:-1}"
+    done <<< "$_saved_planes"
+    CURRENT_NAME="$_saved_current"
+    CURRENT_INDEX=$(plane_index "$CURRENT_NAME")
+    # Guard against a saved current that no longer exists in the planes list
+    if [[ "$CURRENT_INDEX" == "-1" ]]; then
+      CURRENT_NAME="default"
+      CURRENT_INDEX=0
+    fi
+    log "rehydrated: planes=(${PLANES[*]}) current=$CURRENT_NAME"
+  fi
+fi
+
 trap cleanup EXIT SIGTERM SIGINT
 
 # ── main loop ─────────────────────────────────────────────────────────────────
