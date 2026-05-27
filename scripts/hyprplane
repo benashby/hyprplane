@@ -373,7 +373,12 @@ while true; do
   exec 3<>"$AGG"
 
   # socket2 feeder — prefixes lines "S:", sends sentinel "X:" on disconnect
-  (socat -U - "UNIX-CONNECT:${SOCKET}" | sed 's/^/S:/'; echo 'X:disconnect') >&3 &
+  # Pure bash loop instead of sed: sed block-buffers its output when stdout is
+  # a pipe, so events never reach the daemon until ~4096 bytes accumulate.
+  (while IFS= read -r _ev; do
+    printf 'S:%s\n' "$_ev"
+  done < <(socat -U - "UNIX-CONNECT:${SOCKET}")
+  echo 'X:disconnect') >&3 &
   SOCAT_PID=$!
 
   # FIFO feeder — persistent, prefixes lines "C:"
