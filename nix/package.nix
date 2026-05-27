@@ -28,6 +28,11 @@ stdenvNoCC.mkDerivation {
       )}"
     wrapProgram $out/bin/hyprplane-status \
       --prefix PATH ':' "${lib.makeBinPath [ coreutils jq ]}"
+    wrapProgram $out/bin/hyprplane-workspaces \
+      --prefix PATH ':' "${lib.makeBinPath (
+        [ bash coreutils jq socat ]
+        ++ lib.optional withHyprland hyprland
+      )}"
   '';
 
   meta = with lib; {

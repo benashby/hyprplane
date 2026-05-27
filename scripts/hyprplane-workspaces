@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# hyprplane-workspaces — waybar custom module for hyprplane
+#
+# Long-running continuous exec script. Outputs one JSON line per workspace
+# event so waybar updates instantly without polling.
+#
+# Replaces hyprland/workspaces. Add to your waybar config:
+#
+#   "custom/hyprplane-workspaces": {
+#     "exec": "hyprplane-workspaces",
+#     "return-type": "json",
+#     "on-scroll-up":   "echo prev > $XDG_RUNTIME_DIR/hyprplane.fifo",
+#     "on-scroll-down": "echo next > $XDG_RUNTIME_DIR/hyprplane.fifo",
+#     "on-click-right": "your-hyprplane-launcher-script",
+#     "tooltip": true
+#   }
+
+STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
+FIFO="${XDG_RUNTIME_DIR}/hyprplane.fifo"
+
+# ── rendering ─────────────────────────────────────────────────────────────────
+
+render() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    printf '{"text":"","tooltip":"hyprplane not running","class":"hyprplane-ws-inactive"}\n'
+    return
+  fi
+
+  local state current_index base slots persistent_names
+  state=$(cat "$STATE_FILE")
+  current_index=$(jq -r '.currentIndex'          < "$STATE_FILE")
+  slots=$(jq -r        '.slots // 12'            < "$STATE_FILE")
+  base=$(( current_index * 100 ))
+
+  # Persistent workspace names (browsers, chat, gaming, etc.)
+  mapfile -t persistent_names < <(jq -r '.persistentWorkspaces[]?' < "$STATE_FILE")
+
+  local all_ws active_id
+  all_ws=$(hyprctl workspaces -j 2>/dev/null || echo "[]")
+  active_id=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // -9999')
+
+  # ── slot workspaces (current plane only) ────────────────────────────────────
+  local slot_parts=()
+  while IFS=$'\t' read -r ws_id ws_name; do
+    local slot=$(( ws_id - base ))
+    (( slot >= 1 && slot <= slots )) || continue
+
+    local display="$ws_name"
+    [[ "$ws_id" == "$active_id" ]] && display="<b>${ws_name}</b>"
+    slot_parts+=("$display")
+  done < <(jq -r '.[] | select(.id > 0) | [.id, .name] | @tsv' <<< "$all_ws" | sort -n)
+
+  # ── named persistent workspaces ─────────────────────────────────────────────
+  local named_parts=()
+  for name in "${persistent_names[@]}"; do
+    [[ -z "$name" ]] && continue
+    local display="$name"
+    local ws_id
+    ws_id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<< "$all_ws")
+    [[ "$ws_id" == "$active_id" ]] && display="<b>${name}</b>"
+    named_parts+=("$display")
+  done
+
+  # ── assemble output ──────────────────────────────────────────────────────────
+  local slots_text named_text text
+  slots_text=$(IFS="  "; echo "${slot_parts[*]}")
+  named_text=$(IFS="  "; echo "${named_parts[*]}")
+
+  if [[ -n "$slots_text" && -n "$named_text" ]]; then
+    text="${slots_text}  <span alpha='50%'>│</span>  ${named_text}"
+  elif [[ -n "$slots_text" ]]; then
+    text="$slots_text"
+  else
+    text="$named_text"
+  fi
+
+  local current_name all_planes
+  current_name=$(jq -r '.current'                 < "$STATE_FILE")
+  all_planes=$(jq -r   '.planes | join(" › ")'   < "$STATE_FILE")
+
+  jq -cn \
+    --arg text      "$text" \
+    --arg tooltip   "plane: ${current_name}  ·  ${all_planes}" \
+    --arg class     "hyprplane-workspaces" \
+    '{text:$text, tooltip:$tooltip, class:$class}'
+}
+
+# ── event loop ────────────────────────────────────────────────────────────────
+
+discover_instance() {
+  find "${XDG_RUNTIME_DIR}/hypr/" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+    | head -1 | xargs basename 2>/dev/null
+}
+
+render  # initial output
+
+while true; do
+  SIG="${HYPRLAND_INSTANCE_SIGNATURE:-$(discover_instance)}"
+  SOCKET="${XDG_RUNTIME_DIR}/hypr/${SIG}/.socket2.sock"
+
+  if [[ -z "$SIG" || ! -S "$SOCKET" ]]; then
+    sleep 2
+    continue
+  fi
+
+  socat -U - "UNIX-CONNECT:${SOCKET}" | while IFS= read -r line; do
+    event="${line%%>>*}"
+    case "$event" in
+      workspacev2|renameworkspace|createworkspacev2|destroyworkspacev2)
+        render
+        ;;
+    esac
+  done
+
+  sleep 1
+done

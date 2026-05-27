@@ -45,9 +45,10 @@ write_state() {
     --argjson planes       "$planes_json" \
     --arg     current      "$CURRENT_NAME" \
     --argjson currentIndex "$CURRENT_INDEX" \
+    --argjson slots        "$SLOTS" \
     --argjson lastSlots    "$last_slots_json" \
     --argjson persistent   "$persistent_json" \
-    '{planes:$planes,current:$current,currentIndex:$currentIndex,lastSlots:$lastSlots,persistentWorkspaces:$persistent}' \
+    '{planes:$planes,current:$current,currentIndex:$currentIndex,slots:$slots,lastSlots:$lastSlots,persistentWorkspaces:$persistent}' \
     > "$STATE_FILE"
 }
 
@@ -201,6 +202,18 @@ delete_plane() {
   log "deleted plane '$name', windows moved to default"
 }
 
+nav_slot() {
+  local delta="$1" current_ws base current_slot target_slot
+  current_ws=$(hyprctl activeworkspace -j | jq -r '.id')
+  base=$(plane_base "$CURRENT_INDEX")
+  current_slot=$(( current_ws - base ))
+  # Only navigate if currently on a numbered slot in this plane
+  if (( current_slot >= 1 && current_slot <= SLOTS )); then
+    target_slot=$(( (current_slot - 1 + delta + SLOTS) % SLOTS + 1 ))
+    hyprctl dispatch workspace $(( base + target_slot )) > /dev/null
+  fi
+}
+
 # ── event handlers ────────────────────────────────────────────────────────────
 
 # Tracks whether we're currently in a passthrough workspace.
@@ -275,6 +288,8 @@ handle_fifo_command() {
       rename_plane "$old" "$new"
       ;;
     delete) delete_plane "$args" ;;
+    next)   nav_slot 1  ;;
+    prev)   nav_slot -1 ;;
     # TODO: future — move:<window_address>:<plane_name>
     *) log_err "unknown FIFO command: $cmd" ;;
   esac
