@@ -60,16 +60,28 @@ hyprplane \
 
 ## Launcher
 
-hyprplane ships no launcher — use whatever you want. Commands go to the FIFO at `$XDG_RUNTIME_DIR/hyprplane.fifo`. See [docs/fifo-protocol.md](docs/fifo-protocol.md) for the full spec.
+hyprplane ships no launcher. The interface is a FIFO at `$XDG_RUNTIME_DIR/hyprplane.fifo` — write a command line to it, the daemon acts on it synchronously. Current state is always available in `$XDG_RUNTIME_DIR/hyprplane.json`. Any tool that can read a file and write a line to a FIFO can be a launcher.
 
-Example rofi launcher (shell script):
+See [docs/fifo-protocol.md](docs/fifo-protocol.md) for the full command reference.
+
+### Example rofi launcher
+
+Bind this script to a key (e.g. `Super+W`). It reads current state, builds a menu, and writes a command back to hyprplane.
 
 ```bash
 #!/usr/bin/env bash
-STATE=$(cat "$XDG_RUNTIME_DIR/hyprplane.json")
-CURRENT=$(echo "$STATE" | jq -r '.current')
-PLANES=$(echo "$STATE"  | jq -r '.planes[]')
 
+# ── read current state from hyprplane ────────────────────────────────────────
+# hyprplane writes this file after every state change.
+# No IPC needed — just read the file.
+STATE=$(cat "$XDG_RUNTIME_DIR/hyprplane.json")
+CURRENT=$(echo "$STATE" | jq -r '.current')       # name of the active plane
+PLANES=$(echo "$STATE"  | jq -r '.planes[]')       # all plane names, one per line
+
+# ── build the menu ────────────────────────────────────────────────────────────
+# Mark the current plane with ★ so the user knows where they are.
+# Other planes get two leading spaces — the case statement below uses this
+# prefix to detect "switch to this plane" selections.
 OPTIONS=$(printf '%s\n' "$PLANES" | while read -r p; do
   [[ "$p" == "$CURRENT" ]] && echo "★ $p" || echo "  $p"
 done)
@@ -78,16 +90,44 @@ OPTIONS="$OPTIONS
 
 CHOSEN=$(echo "$OPTIONS" | rofi -dmenu -p "plane")
 
+# ── dispatch to hyprplane via FIFO ────────────────────────────────────────────
+# Writing to the FIFO sends a command directly to the daemon.
+# The daemon processes it and updates the state file before the next read.
 case "$CHOSEN" in
-  "★ "*) ;;  # already current, do nothing
+  "★ "*)
+    # Selected the current plane — nothing to do.
+    ;;
   "  "*)
+    # Strip the two-space prefix to recover the plain plane name, then switch.
+    # The daemon rebinds all slot keys to that plane's workspace ID range.
     echo "switch:${CHOSEN#  }" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
     ;;
   "＋ new plane")
+    # Ask for a name, then tell hyprplane to create it.
+    # The daemon allocates the next 100-block of workspace IDs, renames them
+    # so they display as 1–N in waybar, and switches to the new plane.
     NAME=$(echo "" | rofi -dmenu -p "plane name")
     [[ -n "$NAME" ]] && echo "create:$NAME" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
     ;;
 esac
+```
+
+To add rename and delete, extend the menu and add cases:
+
+```bash
+OPTIONS="$OPTIONS
+✏ rename current
+✕ delete current"
+
+# ... in the case statement:
+  "✏ rename current")
+    NEW=$(echo "$CURRENT" | rofi -dmenu -p "rename to")
+    [[ -n "$NEW" && "$NEW" != "$CURRENT" ]] && echo "rename:${CURRENT}:${NEW}" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+    ;;
+  "✕ delete current")
+    # default plane cannot be deleted — the daemon enforces this and logs an error
+    echo "delete:${CURRENT}" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+    ;;
 ```
 
 ## Waybar
