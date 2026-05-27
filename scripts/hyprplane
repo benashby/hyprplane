@@ -2,59 +2,6 @@
 # hyprplane — plane-level workspace grouping for Hyprland
 # https://github.com/benashby/hyprplane
 
-# ── argument parsing ──────────────────────────────────────────────────────────
-
-SLOTS=""
-SLOT_KEYS_RAW=""
-SLOT_MODIFIER=""
-MOVE_MODIFIER=""
-PERSISTENT_WORKSPACES_RAW=""
-PASSTHROUGH_WORKSPACES_RAW=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --slots)                  SLOTS="$2";                      shift 2 ;;
-    --slot-keys)              SLOT_KEYS_RAW="$2";              shift 2 ;;
-    --slot-modifier)          SLOT_MODIFIER="$2";              shift 2 ;;
-    --move-modifier)          MOVE_MODIFIER="$2";              shift 2 ;;
-    --persistent-workspaces)  PERSISTENT_WORKSPACES_RAW="$2";  shift 2 ;;
-    --passthrough-workspaces) PASSTHROUGH_WORKSPACES_RAW="$2"; shift 2 ;;
-    *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
-  esac
-done
-
-# --slot-keys is required — hyprplane does not assume which keys you want bound
-if [[ -z "$SLOT_KEYS_RAW" ]]; then
-  echo "error: --slot-keys is required (e.g. --slot-keys F1,F2,F3,F4,F5)" >&2
-  echo "       hyprplane will not bind any keys by default to avoid conflicts" >&2
-  exit 1
-fi
-
-# --move-modifier is required — no safe default to assume
-if [[ -z "$MOVE_MODIFIER" ]]; then
-  echo "error: --move-modifier is required (e.g. --move-modifier SHIFT)" >&2
-  echo "       use --move-modifier NONE to disable move-to-slot bindings" >&2
-  exit 1
-fi
-
-IFS=',' read -ra SLOT_KEYS      <<< "$SLOT_KEYS_RAW"
-IFS=',' read -ra PASSTHROUGH_WS <<< "$PASSTHROUGH_WORKSPACES_RAW"
-# PERSISTENT_WORKSPACES_RAW used only for state.json output
-
-# derive slot count from key list if not explicitly provided
-[[ -z "$SLOTS" ]] && SLOTS="${#SLOT_KEYS[@]}"
-
-# ── state ─────────────────────────────────────────────────────────────────────
-
-PLANES=("default")
-CURRENT_NAME="default"
-CURRENT_INDEX=0
-declare -A LAST_SLOTS
-LAST_SLOTS["default"]=1
-
-STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
-FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
-
 # ── logging ───────────────────────────────────────────────────────────────────
 
 log()     { echo "[hyprplane] $*" | systemd-cat -t hyprplane -p info 2>/dev/null || echo "[hyprplane] $*" >&2; }
@@ -68,7 +15,6 @@ cleanup() {
   exec 3>&- 2>/dev/null || true
   exit
 }
-trap cleanup EXIT SIGTERM SIGINT
 
 # ── state helpers ─────────────────────────────────────────────────────────────
 
@@ -115,16 +61,16 @@ bind_slots() {
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                        > /dev/null 2>&1 || true
     [[ "$MOVE_MODIFIER" != "NONE" ]] && \
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                        > /dev/null 2>&1 || true
   done
   slot=0
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
     ws_id=$(( base + slot ))
-    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"  > /dev/null
+    hyprctl keyword bind  "${SLOT_MODIFIER},${key},workspace,${ws_id}"      > /dev/null
     [[ "$MOVE_MODIFIER" != "NONE" ]] && \
     hyprctl keyword bind "${MOVE_MODIFIER},${key},movetoworkspace,${ws_id}" > /dev/null
   done
@@ -135,9 +81,9 @@ unbind_slots() {
   for key in "${SLOT_KEYS[@]}"; do
     slot=$(( slot + 1 ))
     [[ $slot -gt $SLOTS ]] && break
-    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${SLOT_MODIFIER},${key}"                        > /dev/null 2>&1 || true
     [[ "$MOVE_MODIFIER" != "NONE" ]] && \
-    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                    > /dev/null 2>&1 || true
+    hyprctl keyword unbind "${MOVE_MODIFIER},${key}"                        > /dev/null 2>&1 || true
   done
 }
 
@@ -263,6 +209,10 @@ delete_plane() {
 
 # ── event handlers ────────────────────────────────────────────────────────────
 
+# Tracks whether we're currently in a passthrough workspace so we know
+# when we're returning from one and need to restore bindings.
+IN_PASSTHROUGH=0
+
 handle_socket_event() {
   local line="$1" event data ws_name active_ws_name
   event="${line%%>>*}"
@@ -278,20 +228,32 @@ handle_socket_event() {
       fi
 
       if is_passthrough "$ws_name"; then
-        log "entering passthrough workspace '$ws_name' — unbinding slots"
-        unbind_slots
+        if [[ "$IN_PASSTHROUGH" == "0" ]]; then
+          log "entering passthrough workspace '$ws_name' — unbinding slots"
+          unbind_slots
+          IN_PASSTHROUGH=1
+        fi
       else
-        log "workspace → '$ws_name', rebinding slots for plane '$CURRENT_NAME'"
-        bind_slots "$CURRENT_INDEX"
+        if [[ "$IN_PASSTHROUGH" == "1" ]]; then
+          # Returning from passthrough — restore bindings
+          log "leaving passthrough, rebinding slots for plane '$CURRENT_NAME'"
+          bind_slots "$CURRENT_INDEX"
+          IN_PASSTHROUGH=0
+        fi
+        # Normal slot navigation within the same plane: no rebind needed.
+        # Bindings are already correct and don't change between slots.
       fi
       ;;
     configreloaded)
+      # Hyprland wiped all dynamic binds — must always restore
       log "configreloaded — restoring bind state"
       active_ws_name=$(hyprctl activeworkspace -j | jq -r '.name')
       if is_passthrough "$active_ws_name"; then
         unbind_slots
+        IN_PASSTHROUGH=1
       else
         bind_slots "$CURRENT_INDEX"
+        IN_PASSTHROUGH=0
       fi
       ;;
   esac
@@ -325,6 +287,67 @@ discover_instance() {
   )
   [[ -n "$HYPRLAND_INSTANCE_SIGNATURE" ]] && export HYPRLAND_INSTANCE_SIGNATURE
 }
+
+# ── sourcing guard ────────────────────────────────────────────────────────────
+# Tests source this file to access the functions above. Everything below
+# (arg parsing, trap, state init, main loop) only runs when executed directly.
+
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+SLOTS=""
+SLOT_KEYS_RAW=""
+SLOT_MODIFIER=""
+MOVE_MODIFIER=""
+PERSISTENT_WORKSPACES_RAW=""
+PASSTHROUGH_WORKSPACES_RAW=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --slots)                  SLOTS="$2";                      shift 2 ;;
+    --slot-keys)              SLOT_KEYS_RAW="$2";              shift 2 ;;
+    --slot-modifier)          SLOT_MODIFIER="$2";              shift 2 ;;
+    --move-modifier)          MOVE_MODIFIER="$2";              shift 2 ;;
+    --persistent-workspaces)  PERSISTENT_WORKSPACES_RAW="$2";  shift 2 ;;
+    --passthrough-workspaces) PASSTHROUGH_WORKSPACES_RAW="$2"; shift 2 ;;
+    *) echo "error: unknown argument '$1'" >&2; exit 1 ;;
+  esac
+done
+
+# --slot-keys is required — hyprplane does not assume which keys you want bound
+if [[ -z "$SLOT_KEYS_RAW" ]]; then
+  echo "error: --slot-keys is required (e.g. --slot-keys F1,F2,F3,F4,F5)" >&2
+  echo "       hyprplane will not bind any keys by default to avoid conflicts" >&2
+  exit 1
+fi
+
+# --move-modifier is required — no safe default to assume
+if [[ -z "$MOVE_MODIFIER" ]]; then
+  echo "error: --move-modifier is required (e.g. --move-modifier SHIFT)" >&2
+  echo "       use --move-modifier NONE to disable move-to-slot bindings" >&2
+  exit 1
+fi
+
+IFS=',' read -ra SLOT_KEYS      <<< "$SLOT_KEYS_RAW"
+IFS=',' read -ra PASSTHROUGH_WS <<< "$PASSTHROUGH_WORKSPACES_RAW"
+# PERSISTENT_WORKSPACES_RAW used only for state.json output
+
+# derive slot count from key list if not explicitly provided
+[[ -z "$SLOTS" ]] && SLOTS="${#SLOT_KEYS[@]}"
+
+# ── state ─────────────────────────────────────────────────────────────────────
+
+PLANES=("default")
+CURRENT_NAME="default"
+CURRENT_INDEX=0
+declare -A LAST_SLOTS
+LAST_SLOTS["default"]=1
+
+STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
+FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
+
+trap cleanup EXIT SIGTERM SIGINT
 
 # ── main loop ─────────────────────────────────────────────────────────────────
 
