@@ -17,11 +17,13 @@
 STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
 
 # ── colors (Catppuccin Mocha) ─────────────────────────────────────────────────
-ACTIVE_FG='#cba6f7'   # mauve  — active slot
-NAMED_FG='#89b4fa'    # blue   — inactive named slots
-NUM_FG='#6c7086'      # overlay0 — inactive numeric slots
-SEP_FG='#45475a'      # surface1 — separator
+ACTIVE_FG='#cba6f7'   # mauve    — active workspace (slot or named)
+NAMED_FG='#89b4fa'    # blue     — inactive named slots
+STATIC_FG='#94e2d5'   # teal     — inactive persistent workspaces
+NUM_FG='#6c7086'      # overlay0 — inactive numeric-only slots
+SEP_FG='#45475a'      # surface1 — slot-to-slot separator
 SEP="<span foreground=\"${SEP_FG}\">  ·  </span>"
+SECTION_SEP="<span foreground=\"${SEP_FG}\">  │  </span>"
 
 # ── rendering ─────────────────────────────────────────────────────────────────
 
@@ -74,6 +76,30 @@ render() {
 
   local text
   text=$(printf "%s${SEP}" "${parts[@]}"); text="${text%${SEP}}"
+
+  # ── persistent (named) workspaces ──────────────────────────────────────────
+  local static_parts=()
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    local ws_id label
+    ws_id=$(jq -r --arg n "$name" '.[] | select(.name == $n) | .id' <<< "$all_ws")
+
+    # Escape Pango entities — workspace names are user input
+    label="${name//&/&amp;}"; label="${label//</&lt;}"; label="${label//>/&gt;}"
+
+    if [[ "$ws_id" == "$active_id" ]]; then
+      static_parts+=("<span foreground=\"${ACTIVE_FG}\" weight=\"bold\">[${label}]</span>")
+    else
+      static_parts+=("<span foreground=\"${STATIC_FG}\">${label}</span>")
+    fi
+  done < <(jq -r '.persistentWorkspaces[]?' < "$STATE_FILE")
+
+  if [[ ${#static_parts[@]} -gt 0 ]]; then
+    local static_text
+    static_text=$(printf "%s${SEP}" "${static_parts[@]}"); static_text="${static_text%${SEP}}"
+    [[ -n "$text" ]] && text+="${SECTION_SEP}"
+    text+="$static_text"
+  fi
 
   jq -cn \
     --arg text    "$text" \
