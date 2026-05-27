@@ -23,6 +23,11 @@ imports = [ inputs.hyprplane.homeModules.default ];
 
 programs.hyprplane = {
   enable = true;
+
+  # Default target is hyprland-session.target. If you use UWSM (start-hyprland),
+  # set this to graphical-session.target instead:
+  # systemd.target = "graphical-session.target";
+
   settings = {
     slotsPerPlane         = 12;
     persistentWorkspaces  = [ "gaming" "browsers" "chat" ];
@@ -73,10 +78,9 @@ OPTIONS="$OPTIONS
 CHOSEN=$(echo "$OPTIONS" | rofi -dmenu -p "plane")
 
 case "$CHOSEN" in
-  "★ "*|"  "*)
-    NAME="${CHOSEN#[★ ]*}"
-    NAME="${NAME#  }"
-    [[ "$NAME" != "$CURRENT" ]] && echo "switch:$NAME" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
+  "★ "*) ;;  # already current, do nothing
+  "  "*)
+    echo "switch:${CHOSEN#  }" > "$XDG_RUNTIME_DIR/hyprplane.fifo"
     ;;
   "＋ new plane")
     NAME=$(echo "" | rofi -dmenu -p "plane name")
