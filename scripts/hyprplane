@@ -257,7 +257,38 @@ handle_socket_event() {
         bind_slots "$CURRENT_INDEX"
         IN_PASSTHROUGH=0
       fi
-      # Normal slot navigation within the same plane: no action needed.
+
+      # Cross-plane jump detection: catches workspace changes that bypass the FIFO
+      # (e.g. hyprctl from a terminal, window rules). Named persistent workspaces
+      # are excluded by name — their IDs can fall inside a plane's numeric range,
+      # which would otherwise produce a false positive.
+      if [[ "$IN_PASSTHROUGH" == "0" && "$ws_id" =~ ^[0-9]+$ ]]; then
+        local _is_persistent=0 _pws
+        for _pws in "${PERSISTENT_WS[@]}"; do
+          [[ "$ws_name" == "$_pws" ]] && _is_persistent=1 && break
+        done
+
+        if [[ "$_is_persistent" == "0" ]]; then
+          local _jump_plane=$(( ws_id / 100 ))
+          local _jump_slot=$(( ws_id % 100 ))
+          if (( _jump_plane != CURRENT_INDEX )) \
+             && (( _jump_plane < ${#PLANES[@]} )) \
+             && (( _jump_slot >= 1 && _jump_slot <= SLOTS )); then
+            # Save the slot we're leaving (derived from the previous workspace event)
+            local _prev_slot=$(( PREV_WS_ID - $(plane_base "$CURRENT_INDEX") ))
+            if (( _prev_slot >= 1 && _prev_slot <= SLOTS )); then
+              LAST_SLOTS["$CURRENT_NAME"]=$_prev_slot
+            fi
+            CURRENT_INDEX="$_jump_plane"
+            CURRENT_NAME="${PLANES[$_jump_plane]}"
+            bind_slots "$CURRENT_INDEX"
+            write_state
+            log "cross-plane jump detected → plane '$CURRENT_NAME' (ws=$ws_id)"
+          fi
+        fi
+      fi
+
+      PREV_WS_ID="$ws_id"
       ;;
     configreloaded)
       # Hyprland wiped all dynamic binds — must always restore
@@ -348,7 +379,7 @@ fi
 
 IFS=',' read -ra SLOT_KEYS      <<< "$SLOT_KEYS_RAW"
 IFS=',' read -ra PASSTHROUGH_WS <<< "$PASSTHROUGH_WORKSPACES_RAW"
-# PERSISTENT_WORKSPACES_RAW used only for state.json output
+IFS=',' read -ra PERSISTENT_WS  <<< "$PERSISTENT_WORKSPACES_RAW"
 
 # derive slot count from key list if not explicitly provided
 [[ -z "$SLOTS" ]] && SLOTS="${#SLOT_KEYS[@]}"
@@ -360,6 +391,7 @@ CURRENT_NAME="default"
 CURRENT_INDEX=0
 declare -A LAST_SLOTS
 LAST_SLOTS["default"]=1
+PREV_WS_ID=0
 
 STATE_FILE="${XDG_RUNTIME_DIR}/hyprplane.json"
 FIFO_PATH="${XDG_RUNTIME_DIR}/hyprplane.fifo"
