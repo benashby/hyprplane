@@ -111,8 +111,8 @@ switch_to_plane() {
   target_ws=$(( $(plane_base "$index") + target_slot ))
 
   bind_slots "$CURRENT_INDEX"
-  hyprctl dispatch workspace "$target_ws" > /dev/null
   write_state
+  hyprctl dispatch workspace "$target_ws" > /dev/null
   log "switched to plane '$name' (index=$index, slot=$target_slot, ws=$target_ws)"
 }
 
